@@ -47,6 +47,7 @@ const winston = require("winston");
 const player = require("play-sound")((opts = {}));
 const axiosCookieJarSupport = require("axios-cookiejar-support").default;
 const tough = require("tough-cookie");
+const { parse } = require("node-html-parser");
 
 axiosCookieJarSupport(axios);
 
@@ -95,6 +96,39 @@ const playAlert = () => {
   player.play("/System/Library/Sounds/Ping.aiff", function (err) {
     if (err) throw err;
   });
+};
+
+const checkNatickMall = async () => {
+  logger.info("Checking natick mall ...");
+  const tokenRequestUrl =
+    "https://home.color.com/api/v1/get_onsite_claim?partner=natickmall";
+
+  const tokenResponse = await axios.get(tokenRequestUrl);
+
+  const { token } = tokenResponse.data;
+
+  const url = `https://home.color.com/api/v1/vaccination_appointments/availability?claim_token=${token}&collection_site=Natick%20Mall`;
+
+  const resp = await axios.get(url);
+
+  const { remainingSpaces, dates } = resp.data.reduce(
+    (final, current) => {
+      final.remainingSpaces = final.remainingSpaces + current.remainingSpaces;
+      if (current.remainingSpaces > 0) {
+        final.dates = `${final.dates}; ${current.start}`;
+      }
+      return final;
+    },
+    {
+      remainingSpaces: 0,
+      dates: "",
+    }
+  );
+
+  if (remainingSpaces > 0) {
+    logSuccess(`Found appointments at the Natick Mall`);
+    return Promise.resolve(true);
+  }
 };
 
 const checkCVS = async (state = "ma") => {
@@ -202,21 +236,50 @@ const checkGiantFoodStores = async () => {
   });
 };
 
+const checkGillette = async () => {
+  logger.info("Checking Gillette ...");
+  const url = "https://vaxfinder.mass.gov/locations/gillette-stadium/";
+
+  const resp = await axios.get(url);
+
+  const root = parse(resp.data);
+
+  const rows = root.querySelectorAll(".availability-table table tbody tr");
+
+  const totalAppointments = Array.from(rows).reduce((final, current) => {
+    try {
+      const lastCell = Array.from(current.querySelectorAll("td")).reverse()[0];
+      const available = lastCell.childNodes[0].childNodes[0].rawText;
+      return final + parseInt(available);
+    } catch (err) {
+      return 0;
+    }
+  }, 0);
+
+  if (totalAppointments > 10) {
+    logSuccess(`Found ${totalAppointments} at Gillette Stadium`);
+  }
+
+  return Promise.resolve(totalAppointments > 10);
+};
+
 const start = async () => {
   try {
     logger.info("Starting ...");
     await Promise.all([
-      ...riteAids.map(
-        async ({ address, storeNo }) => await checkRiteAid(storeNo, address)
-      ),
-      await checkWeissPharmacy(),
+      // ...riteAids.map(
+      //   async ({ address, storeNo }) => await checkRiteAid(storeNo, address)
+      // ),
+      // await checkWeissPharmacy(),
       await checkCVS("ma"),
+      await checkNatickMall(),
+      await checkGillette(),
     ]);
   } catch (err) {
     logger.error(err);
   }
 
-  setTimeout(() => start(), 10 * 1000);
+  setTimeout(() => start(), 30 * 1000);
 };
 
 start();
