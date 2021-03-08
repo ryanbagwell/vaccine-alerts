@@ -160,10 +160,10 @@ const checkCVS = async (state = "ma") => {
     let result = false;
 
     locations.map((location) => {
-      const { totalAvailable, city } = location;
-      if (totalAvailable !== "0") {
+      const { totalAvailable, city, status } = location;
+      if (status !== "Fully Booked") {
         logSuccess(
-          `Found ${totalAvailable} appointments available at CVS in ${city}. Visit https://www.cvs.com/immunizations/covid-19-vaccine`
+          `Found appointments available at CVS in ${city}. Visit https://www.cvs.com/immunizations/covid-19-vaccine`
         );
         result = true;
       }
@@ -236,15 +236,25 @@ const checkGiantFoodStores = async () => {
   });
 };
 
-const checkGillette = async () => {
-  logger.info("Checking Gillette ...");
-  const url = "https://vaxfinder.mass.gov/locations/gillette-stadium/";
+const checkMassVaxPortal = async (locationSlug, registrationLink = "") => {
+  logger.info(`Checking ${locationSlug}`);
+  const url = `https://vaxfinder.mass.gov/locations/${locationSlug}/`;
 
   const resp = await axios.get(url);
 
   const root = parse(resp.data);
 
   const rows = root.querySelectorAll(".availability-table table tbody tr");
+
+  const rowArray = Array.from(rows);
+
+  if (
+    rowArray.length === 1 &&
+    rowArray[0].querySelectorAll("td").length === 1
+  ) {
+    logger.info(`No appointments at ${locationSlug}`);
+    return Promise.resolve(0);
+  }
 
   const totalAppointments = Array.from(rows).reduce((final, current) => {
     try {
@@ -256,11 +266,91 @@ const checkGillette = async () => {
     }
   }, 0);
 
-  if (totalAppointments > 10) {
-    logSuccess(`Found ${totalAppointments} at Gillette Stadium`);
+  if (totalAppointments > 0) {
+    logSuccess(
+      `Found ${totalAppointments} at ${locationSlug}: ${registrationLink}`
+    );
   }
 
-  return Promise.resolve(totalAppointments > 10);
+  return Promise.resolve(totalAppointments > 0);
+};
+
+const checkWalgreens = async (lat, lng, locationName, radius = 25) => {
+  logger.info(`Checking Walgreens near ${locationName}`);
+
+  const walgreensCookieJar = new tough.CookieJar();
+
+  const initUrl =
+    "https://www.walgreens.com/findcare/vaccination/covid-19/location-screening/";
+
+  const initResp = await axios.get(initUrl, {
+    jar: walgreensCookieJar,
+    withCredentials: true,
+  });
+
+  const html = parse(initResp.data);
+
+  const cookieMeta = html.querySelectorAll("meta").find((el) => {
+    return el.getAttribute("name") === "_csrf";
+  });
+
+  const csrfToken = cookieMeta.getAttribute("content");
+
+  const url =
+    "https://www.walgreens.com/hcschedulersvc/svc/v1/immunizationLocations/availability";
+
+  const today = new Date();
+
+  const resp = await axios
+    .post(
+      url,
+      {
+        serviceId: "99",
+        radius: radius,
+        size: 25,
+        state: "MA",
+        position: {
+          latitude: lat,
+          longitude: lng,
+        },
+        appointmentAvailability: {
+          startDateTime: today.toISOString().split("T")[0],
+        },
+      },
+      {
+        jar: walgreensCookieJar,
+        withCredentials: true,
+        headers: {
+          accept: "application/json, text/plain, */*",
+          "accept-language": "en-US,en;q=0.9",
+          "cache-control": "no-cache",
+          "content-type": "application/json; charset=UTF-8",
+          pragma: "no-cache",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
+          "x-xsrf-token": csrfToken,
+          Referer: initUrl,
+          origin: "https://www.walgreens.com",
+          "user-agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36",
+        },
+      }
+    )
+    .catch((err) => {
+      console.log(err.response.data);
+      //console.log(err.request.getHeaders());
+    });
+
+  const { appointmentsAvailable } = resp.data;
+
+  if (appointmentsAvailable) {
+    logSuccess(
+      `Found appointments available at Walgreens near ${locationName}. See https://www.walgreens.com/findcare/vaccination/covid-19/location-screening`
+    );
+  }
+
+  return Promise.resolve(appointmentsAvailable);
 };
 
 const start = async () => {
@@ -272,8 +362,18 @@ const start = async () => {
       // ),
       // await checkWeissPharmacy(),
       await checkCVS("ma"),
-      await checkNatickMall(),
-      await checkGillette(),
+      // await checkNatickMall(),
+      // await checkMassVaxPortal(
+      //   "fenway-park",
+      //   "https://www.maimmunizations.org/clinic/search?location=&search_radius=All&q%5Bvenue_search_name_or_venue_name_i_cont%5D=fenway&q%5Bclinic_date_gteq%5D=&q%5Bvaccinations_name_i_cont%5D=&commit=Search#search_results"
+      // ),
+      // await checkMassVaxPortal(
+      //   "gillette-stadium",
+      //   "https://www.maimmunizations.org/clinic/search?location=&search_radius=All&q%5Bvenue_search_name_or_venue_name_i_cont%5D=gillette&q%5Bclinic_date_gteq%5D=&q%5Bvaccinations_name_i_cont%5D=&commit=Search#search_results#search_results"
+      // ),
+      //await checkMassVaxPortal("doubletree-hotel-danvers"),
+      //await checkWalgreens(42.4573354, -71.0616623, "Melrose", 5),
+      await checkWalgreens(42.6259, -73.108711, "Adams", 10),
     ]);
   } catch (err) {
     logger.error(err);
